@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	log "github.com/sirupsen/logrus"
@@ -39,6 +40,7 @@ func (c *Client) setupTerminalMode(ctx context.Context, session *ssh.Session) er
 
 	c.terminalState = state
 	c.terminalFd = fd
+	c.stopWindowResize = forwardWindowResize(session, fd)
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
@@ -96,4 +98,42 @@ func (c *Client) setupTerminal(session *ssh.Session, fd int) error {
 	}
 
 	return nil
+}
+
+// forwardWindowResize relays local terminal size changes to the remote PTY until
+// the returned stop function is called.
+func forwardWindowResize(session *ssh.Session, fd int) func() {
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGWINCH)
+	done := make(chan struct{})
+
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			case <-sigChan:
+				sendWindowSize(session, fd)
+			}
+		}
+	}()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			signal.Stop(sigChan)
+			close(done)
+		})
+	}
+}
+
+func sendWindowSize(session *ssh.Session, fd int) {
+	w, h, err := term.GetSize(fd)
+	if err != nil {
+		log.Debugf("get terminal size: %v", err)
+		return
+	}
+	if err := session.WindowChange(h, w); err != nil {
+		log.Debugf("send window change: %v", err)
+	}
 }

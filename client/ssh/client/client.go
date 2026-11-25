@@ -39,6 +39,9 @@ type Client struct {
 	terminalState *term.State
 	terminalFd    int
 
+	// stopWindowResize ends terminal resize forwarding for the current session.
+	stopWindowResize func()
+
 	windowsStdoutMode uint32 // nolint:unused
 	windowsStdinMode  uint32 // nolint:unused
 }
@@ -112,6 +115,11 @@ func (c *Client) handleSessionError(err error) error {
 
 // restoreTerminal restores the terminal to its original state
 func (c *Client) restoreTerminal() {
+	if c.stopWindowResize != nil {
+		c.stopWindowResize()
+		c.stopWindowResize = nil
+	}
+
 	if c.terminalState != nil {
 		_ = term.Restore(c.terminalFd, c.terminalState)
 		c.terminalState = nil
